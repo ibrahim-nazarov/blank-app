@@ -1,35 +1,23 @@
-# -*- coding: utf-8 -*-
-"""Gündəlik Maliyyə Portalı — Google Sheets ilə işləyir (oxu + yaz)."""
 import datetime as dt
 import hmac
 import re
-import subprocess
-import sys
 import xml.etree.ElementTree as ET
 from zoneinfo import ZoneInfo
 
 import streamlit as st
 
-
-def _ensure(pip_name, module):
-    """requirements.txt yoxdursa, çatışmayan paketi özü quraşdırır."""
-    try:
-        __import__(module)
-    except ImportError:
-        subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", pip_name])
-
-
-_ensure("gspread", "gspread")
-_ensure("google-auth", "google.oauth2.service_account")
-_ensure("requests", "requests")
-_ensure("pandas", "pandas")
-
-import gspread
-import pandas as pd
-import requests
-from google.oauth2.service_account import Credentials
-
 st.set_page_config(page_title="Gündəlik Maliyyə Portalı", page_icon="💼", layout="centered")
+
+try:
+    import gspread
+    import pandas as pd
+    import requests
+    from google.oauth2.service_account import Credentials
+except ImportError:
+    st.error("📦 Paketlər quraşdırılmayıb. GitHub-da bu skriptlə EYNİ qovluqda "
+             "`requirements.txt` faylı yaradın və içinə bunları yazın, sonra Reboot edin:")
+    st.code("streamlit\ngspread\ngoogle-auth\nrequests\npandas")
+    st.stop()
 
 # ───────────── Tənzimləmələr ─────────────
 FIRST_ROW = 3          # məlumat 3-cü sətirdən başlayır (1-2 başlıqdır)
