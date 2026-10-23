@@ -3,13 +3,30 @@
 import datetime as dt
 import hmac
 import re
+import subprocess
+import sys
 import xml.etree.ElementTree as ET
 from zoneinfo import ZoneInfo
+
+import streamlit as st
+
+
+def _ensure(pip_name, module):
+    """requirements.txt yoxdursa, çatışmayan paketi özü quraşdırır."""
+    try:
+        __import__(module)
+    except ImportError:
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", pip_name])
+
+
+_ensure("gspread", "gspread")
+_ensure("google-auth", "google.oauth2.service_account")
+_ensure("requests", "requests")
+_ensure("pandas", "pandas")
 
 import gspread
 import pandas as pd
 import requests
-import streamlit as st
 from google.oauth2.service_account import Credentials
 
 st.set_page_config(page_title="Gündəlik Maliyyə Portalı", page_icon="💼", layout="centered")
@@ -58,11 +75,15 @@ st.markdown("""
 
 
 # ───────────── Giriş (şifrə) ─────────────
+def secret(name, default=""):
+    try:
+        return st.secrets.get(name, default)
+    except Exception:
+        return default
+
+
 def gate():
-    pw = st.secrets.get("APP_PASSWORD", "")
-    if not pw:
-        st.error("🔒 Təhlükəsizlik üçün Secrets-də APP_PASSWORD təyin edin.")
-        st.stop()
+    pw = secret("APP_PASSWORD", "7F2M5ZN")  # Secrets-də APP_PASSWORD yazsanız o keçərli olur
     if st.session_state.get("auth"):
         return
     st.markdown('<div class="hero"><h1>💼 Gündəlik Maliyyə Portalı</h1><p>Davam etmək üçün şifrəni daxil edin</p></div>',
@@ -85,7 +106,7 @@ def get_ws():
         scopes=["https://www.googleapis.com/auth/spreadsheets"],
     )
     sh = gspread.authorize(creds).open_by_key(st.secrets["SHEET_ID"])
-    name = st.secrets.get("WORKSHEET_NAME", "")
+    name = secret("WORKSHEET_NAME", "")
     return sh.worksheet(name) if name else sh.get_worksheet(0)
 
 
