@@ -1,4 +1,5 @@
 import datetime as dt
+import hashlib
 import hmac
 import html as htmllib
 import json
@@ -262,6 +263,8 @@ existing = rows.get(d)
 ex_row, ex_vals, ex_rates = existing if existing else (None, None, None)
 prev_dates = [x for x in rows if x < d]
 prev_vals = rows[max(prev_dates)][1] if prev_dates else None
+# cədvəldəki məlumat dəyişəndə (və ya tarix tapılanda) xanalar cədvəldən yenidən doldurulsun
+sig = hashlib.md5(repr((ex_vals, ex_rates, None if ex_vals else prev_vals)).encode()).hexdigest()[:6]
 
 if existing:
     st.info(f"✏️ Bu tarix cədvəldə var (sətir {ex_row}). Dəyişib təsdiqləsəniz yalnız bu sətir yenilənəcək.")
@@ -271,6 +274,17 @@ elif prev_vals:
                f"təsdiqləsəniz {d:%d.%m.%Y} kimi cədvəlin ən altına yazılacaq, {pd_:%d.%m.%Y} olduğu kimi qalacaq.")
 else:
     st.success("🆕 Yeni gün — məlumatları daxil edin.")
+
+with st.expander(f"📋 Cədvəldə {len(rows)} tarix tapıldı"):
+    if rows:
+        st.dataframe(pd.DataFrame([{"Tarix": f"{k:%d.%m.%Y}", "Sətir": v[0]} for k, v in sorted(rows.items())]),
+                     hide_index=True)
+        st.caption(f"Axtarılan tarix: {d:%d.%m.%Y} → " + (f"tapıldı (sətir {ex_row})" if existing else "cədvəldə yoxdur"))
+    else:
+        st.write("Heç bir tarix oxunmadı — A sütununda (3-cü sətirdən) tarixlərin olduğunu yoxlayın.")
+    if st.button("🔄 Cədvəli yenidən oxu"):
+        load_rows.clear()
+        st.rerun()
 
 # ── Məzənnələr
 st.markdown("#### 💱 Günün məzənnəsi")
@@ -292,7 +306,7 @@ for i, (code, sym, color, col) in enumerate(CURRENCIES):
 with st.expander("✏️ Məzənnəni əl ilə düzəlt"):
     for code, sym, color, col in CURRENCIES:
         rates[code] = st.number_input(f"{code} → AZN", value=rates[code], min_value=0.0,
-                                      step=0.0001, format="%.6f", key=f"rate_{code}_{iso}_{rates[code]:.6f}")
+                                      step=0.0001, format="%.6f", key=f"rate_{code}_{iso}_{sig}_{rates[code]:.6f}")
 if from_sheet:
     st.caption("Mənbə: bu gün üçün cədvəldə saxlanmış məzənnə.")
 elif fetched["rates"]:
@@ -326,7 +340,7 @@ for title, color, fields in SECTIONS:
         cols = st.columns(2 if len(fields) > 1 else 1)
         for i, (label, col) in enumerate(fields):
             values[col] = cols[i % len(cols)].number_input(
-                label, value=default(col), step=1.0, format="%.2f", key=f"f{col}_{iso}")
+                label, value=default(col), step=1.0, format="%.2f", key=f"f{col}_{iso}_{sig}")
 
 st.markdown("#### 🌍 Xarici vəsait")
 st.caption("Məbləği yazın — AZN qarşılığı həmin günün məzənnəsi ilə hesablanıb cədvəlin \\AZN sütununa avtomatik yazılacaq.")
@@ -337,7 +351,7 @@ for code, sym, color, col in CURRENCIES:
                     unsafe_allow_html=True)
         c1, c2 = st.columns([3, 2])
         amt = c1.number_input(f"{code} məbləği", value=default(col), step=1.0, format="%.2f",
-                              key=f"f{col}_{iso}")
+                              key=f"f{col}_{iso}_{sig}")
         c2.metric("≈ AZN", f"{amt * rates[code]:,.2f} ₼")
         values[col] = amt
         values[col + 1] = rates[code] if AZN_MODE == "rate" else round(amt * rates[code], 2)
