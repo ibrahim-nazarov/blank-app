@@ -22,9 +22,10 @@ except Exception:
 # Apps Script "Web app" ünvanı (Yerləşdir/Deploy-dan sonra aldığınız link)
 SCRIPT_URL = "https://script.google.com/macros/s/AKfycbzDUgbEzTPvaSl8rER7NZZtPMGJePOXZCIevBic7jtQcJuj5BP9a1XdYKDHfCQY6JXUQA/exec"
 SCRIPT_TOKEN = "9c63849298a70dfe"   # Code.gs-dəki TOKEN ilə eyni
-# "rate"       → USD\AZN sütununa məzənnə yazılır (məs. 1.7000)
-# "equivalent" → USD\AZN sütununa AZN qarşılığı yazılır (məbləğ × məzənnə)
-AZN_MODE = "rate"
+# "equivalent" → USD\AZN sütununa AZN qarşılığı avtomatik yazılır (məbləğ × məzənnə)
+#                (məzənnənin özü həmin xananın qeydində (note) saxlanır)
+# "rate"       → USD\AZN sütununa yalnız məzənnənin özü yazılır
+AZN_MODE = "equivalent"
 
 SECTIONS = [  # (başlıq, rəng, [(etiket, sütun nömrəsi)])
     ("Kapital", "#2E75B6", [("1101", 2), ("9580", 3), ("3854", 4), ("1815", 5)]),
@@ -116,13 +117,14 @@ def load_rows():
     for r in data["rows"]:
         d = to_date(r["date"])
         if d:
-            rows[d] = (r["row"], ([None] + list(r["values"]) + [0] * LAST_COL)[:LAST_COL])
+            rows[d] = (r["row"], ([None] + list(r["values"]) + [0] * LAST_COL)[:LAST_COL],
+                       list(r.get("rates", [])))
     return rows, data["next_row"]
 
 
-def save_day(d, values):
+def save_day(d, values, rate_list):
     line = [values.get(c, 0.0) for c in range(2, LAST_COL + 1)]
-    res = api({"action": "write", "date": d.isoformat(), "values": line})
+    res = api({"action": "write", "date": d.isoformat(), "values": line, "rates": rate_list})
     load_rows.clear()
     return res
 
@@ -171,7 +173,7 @@ d = st.date_input("📅 Tarix", value=today, format="DD.MM.YYYY")
 iso = d.isoformat()
 
 existing = rows.get(d)
-ex_row, ex_vals = existing if existing else (None, None)
+ex_row, ex_vals, ex_rates = existing if existing else (None, None, None)
 prev_dates = [x for x in rows if x < d]
 prev_vals = rows[max(prev_dates)][1] if prev_dates else None
 
@@ -187,9 +189,11 @@ st.markdown("#### 💱 Günün məzənnəsi")
 cards = st.container()
 fetched = fetch_rates(d)
 rates, from_sheet = {}, False
-for code, sym, color, col in CURRENCIES:
+for i, (code, sym, color, col) in enumerate(CURRENCIES):
     base = None
-    if ex_vals and AZN_MODE == "rate":
+    if ex_rates and i < len(ex_rates) and isinstance(ex_rates[i], (int, float)) and ex_rates[i] > 0:
+        base, from_sheet = float(ex_rates[i]), True          # həmin gün saxlanmış məzənnə
+    elif ex_vals and AZN_MODE == "rate":
         v = ex_vals[col]  # \AZN sütununun indeksi (0-əsaslı)
         if isinstance(v, (int, float)) and v > 0:
             base, from_sheet = float(v), True
@@ -232,6 +236,8 @@ for title, color, fields in SECTIONS:
                 label, value=default(col), step=0.01, format="%.2f", key=f"f{col}_{iso}")
 
 st.markdown("#### 🌍 Xarici vəsait")
+st.caption("Məbləği yazın — AZN qarşılığı həmin günün məzənnəsi ilə hesablanıb cədvəlin \\AZN sütununa avtomatik yazılacaq.")
+total_azn = 0.0
 for code, sym, color, col in CURRENCIES:
     with st.container(border=True):
         st.markdown(f'<span class="chip" style="background:{color}">{code} · {rates[code]:.4f} ₼</span>',
@@ -242,11 +248,16 @@ for code, sym, color, col in CURRENCIES:
         c2.metric("≈ AZN", f"{amt * rates[code]:,.2f} ₼")
         values[col] = amt
         values[col + 1] = rates[code] if AZN_MODE == "rate" else round(amt * rates[code], 2)
+        total_azn += amt * rates[code]
+
+st.markdown(f'<div class="hero" style="padding:12px;margin-top:8px"><p style="margin:0">Xarici vəsaitin cəmi</p>'
+            f'<h1 style="font-size:1.4rem">≈ {total_azn:,.2f} ₼</h1></div>', unsafe_allow_html=True)
 
 # ── Yoxla → Təsdiqlə
 st.write("")
 if st.button("🔍 Yoxla və təsdiqə göndər", type="primary", use_container_width=True):
-    st.session_state["pending"] = {"date": d, "values": dict(values)}
+    st.session_state["pending"] = {"date": d, "values": dict(values),
+                                   "rates": [rates[c[0]] for c in CURRENCIES]}
 
 pend = st.session_state.get("pending")
 if pend and pend["date"] == d:
@@ -266,7 +277,7 @@ if pend and pend["date"] == d:
     b1, b2 = st.columns(2)
     if b1.button("✅ Təsdiqlə və Sheet-ə yaz", type="primary", use_container_width=True):
         try:
-            save_day(d, pend["values"])
+            save_day(d, pend["values"], pend["rates"])
             st.session_state.pop("pending", None)
             st.toast("Cədvələ yazıldı ✅")
             st.success(f"Yazıldı! {d:%d.%m.%Y} · sətir {target}")
