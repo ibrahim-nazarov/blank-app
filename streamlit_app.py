@@ -23,7 +23,7 @@ except Exception:
 
 # Apps Script "Web app" ünvanı (Yerləşdir/Deploy-dan sonra aldığınız link)
 SCRIPT_URL = "https://script.google.com/macros/s/AKfycbzDUgbEzTPvaSl8rER7NZZtPMGJePOXZCIevBic7jtQcJuj5BP9a1XdYKDHfCQY6JXUQA/exec"
-EXPECTED_VERSION = 5   # Code.gs-dəki VERSION ilə uyğun olmalıdır
+EXPECTED_VERSION = 6   # Code.gs-dəki VERSION ilə uyğun olmalıdır
 SCRIPT_TOKEN = "9c63849298a70dfe"   # Code.gs-dəki TOKEN ilə eyni
 # "equivalent" → USD\AZN sütununa AZN qarşılığı avtomatik yazılır (məbləğ × məzənnə)
 #                (məzənnənin özü həmin xananın qeydində (note) saxlanır)
@@ -281,8 +281,9 @@ sig = hashlib.md5(repr((ex_vals, ex_rates, base_date, None if ex_vals else base_
 
 if meta.get("version") != EXPECTED_VERSION:
     st.error("⚠️ Apps Script köhnə versiyadır — tarixlər səhv oxuna bilər (məlumat dolmur, eyni gün təkrar yazılır). "
-             "Cədvəldə Apps Script-ə yeni Code.gs-i yapışdırın və **Deploy → Manage deployments → ✏️ → "
-             "Version: New version → Deploy** edin.")
+             "Apps Script-ə yeni Code.gs-i yapışdırın, Save edin və **Deploy (Dağıt) → Manage deployments "
+             "(Dağıtımları yönet) → ✏️ → Version: New version (Yeni sürüm) → Deploy** edin. "
+             "Yoxlamaq üçün Web app linkini brauzerdə açın: `\"version\": 6` görünməlidir.")
 
 if existing:
     st.info(f"✏️ {d:%d.%m.%Y} cədvəldə var (sətir {ex_row}) — təsdiqləsəniz həmin sətir düzələcək.")
