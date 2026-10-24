@@ -129,28 +129,81 @@ def save_day(d, values, rate_list):
     return res
 
 
-# ───────────── Məzənnə (AMB rəsmi XML) ─────────────
-@st.cache_data(ttl=3600, show_spinner=False)
-def fetch_rates(d: dt.date):
-    """Seçilən gün üçün AMB məzənnəsi; elan olunmayıbsa ən yaxın əvvəlki gün."""
-    codes = {c[0] for c in CURRENCIES}
+# ───────────── Məzənnə: AMB (rəsmi) → ehtiyat mənbə ─────────────
+UA = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                    "(KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+      "Accept": "application/xml,text/xml,application/json,*/*"}
+CODES = [c[0] for c in CURRENCIES]
+
+
+def _from_cbar(d, errs):
+    """Azərbaycan Mərkəzi Bankının rəsmi XML-i; elan olunmayıbsa ən yaxın əvvəlki gün."""
     for back in range(0, 7):
         day = d - dt.timedelta(days=back)
         try:
-            r = requests.get(f"https://www.cbar.az/currencies/{day:%d.%m.%Y}.xml", timeout=10)
-            if r.status_code != 200:
-                continue
+            r = requests.get(f"https://www.cbar.az/currencies/{day:%d.%m.%Y}.xml", headers=UA, timeout=12)
+        except Exception as e:
+            errs.append(f"cbar.az: {type(e).__name__}")
+            return None
+        if r.status_code == 404:
+            continue
+        if r.status_code != 200:
+            errs.append(f"cbar.az: HTTP {r.status_code}")
+            return None
+        try:
             out = {}
             for v in ET.fromstring(r.content).iter("Valute"):
                 code = v.get("Code")
-                if code in codes:
+                if code in CODES:
                     nominal = float(re.sub(r"[^\d]", "", v.findtext("Nominal") or "1") or 1)
                     out[code] = float(v.findtext("Value").replace(",", ".")) / nominal
-            if codes <= set(out):
-                return out, day
-        except Exception:
-            continue
+            if set(CODES) <= set(out):
+                return out, day, "Azərbaycan Mərkəzi Bankı (cbar.az)"
+            errs.append(f"cbar.az: {day:%d.%m.%Y} faylında bütün valyutalar yoxdur")
+        except Exception as e:
+            errs.append(f"cbar.az: XML oxunmadı ({type(e).__name__})")
+        return None
     return None
+
+
+def _from_currency_api(d, errs):
+    """Ehtiyat: açıq currency-api (1 AZN = X valyuta → tərsi alınır). 2024-03-02-dən tarixi də var."""
+    today = dt.datetime.now(TZ).date()
+    tags = [d.isoformat()] if dt.date(2024, 3, 2) <= d <= today else []
+    tags.append("latest")
+    for tag in tags:
+        for url in (f"https://cdn.jsdelivr.net/npm/@fawazahmed0/currency-api@{tag}/v1/currencies/azn.json",
+                    f"https://{tag}.currency-api.pages.dev/v1/currencies/azn.json"):
+            try:
+                r = requests.get(url, headers=UA, timeout=12)
+                r.raise_for_status()
+                js = r.json()
+                out = {c: round(1.0 / float(js["azn"][c.lower()]), 4) for c in CODES}
+                try:
+                    day = dt.date.fromisoformat(js.get("date", ""))
+                except ValueError:
+                    day = today
+                return out, day, "currency-api (bazar məzənnəsi, AMB-dən az fərqlənə bilər)"
+            except Exception as e:
+                errs.append(f"currency-api ({tag}): {type(e).__name__}")
+    return None
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_cached(d: dt.date):
+    errs = []
+    for fn in (_from_cbar, _from_currency_api):
+        res = fn(d, errs)
+        if res:
+            return {"rates": res[0], "day": res[1], "source": res[2], "errors": errs}
+    raise RuntimeError(" | ".join(errs) or "naməlum xəta")   # uğursuz nəticə keşlənmir
+
+
+def fetch_rates(d):
+    try:
+        return fetch_cached(d)
+    except Exception as e:
+        return {"rates": None, "errors": [str(e)]}
 
 
 # ═════════════ Səhifə ═════════════
@@ -197,21 +250,26 @@ for i, (code, sym, color, col) in enumerate(CURRENCIES):
         v = ex_vals[col]  # \AZN sütununun indeksi (0-əsaslı)
         if isinstance(v, (int, float)) and v > 0:
             base, from_sheet = float(v), True
-    if base is None and fetched:
-        base = fetched[0][code]
+    if base is None and fetched["rates"]:
+        base = fetched["rates"][code]
     rates[code] = base or 0.0
 
 with st.expander("✏️ Məzənnəni əl ilə düzəlt"):
     for code, sym, color, col in CURRENCIES:
         rates[code] = st.number_input(f"{code} → AZN", value=rates[code], min_value=0.0,
-                                      step=0.0001, format="%.4f", key=f"rate_{code}_{iso}")
+                                      step=0.0001, format="%.4f", key=f"rate_{code}_{iso}_{rates[code]:.4f}")
 if from_sheet:
     st.caption("Mənbə: bu gün üçün cədvəldə saxlanmış məzənnə.")
-elif fetched:
-    extra = "" if fetched[1] == d else " (seçilən gün üçün hələ elan olunmayıb, ən yaxın tarix göstərilir)"
-    st.caption(f"Mənbə: Azərbaycan Mərkəzi Bankı (cbar.az) · {fetched[1]:%d.%m.%Y}{extra}")
+elif fetched["rates"]:
+    extra = "" if fetched["day"] == d else " (seçilən gün üçün elan olunmayıb, ən yaxın tarix göstərilir)"
+    st.caption(f"Mənbə: {fetched['source']} · {fetched['day']:%d.%m.%Y}{extra}")
 else:
     st.warning("Məzənnə avtomatik alınmadı — yuxarıdakı xanadan əl ilə yazın.")
+    with st.expander("🔧 Texniki detallar"):
+        st.code("\n".join(fetched["errors"]))
+    if st.button("🔄 Yenidən yoxla"):
+        fetch_cached.clear()
+        st.rerun()
 
 cards.markdown(
     '<div class="rate-grid">' + "".join(
