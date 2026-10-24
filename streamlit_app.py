@@ -1,28 +1,27 @@
 import datetime as dt
 import hmac
+import json
 import re
 import xml.etree.ElementTree as ET
 from zoneinfo import ZoneInfo
 
+import pandas as pd
+import requests
 import streamlit as st
 
 st.set_page_config(page_title="Gündəlik Maliyyə Portalı", page_icon="💼", layout="centered")
 
-try:
-    import gspread
-    import pandas as pd
-    import requests
-    from google.oauth2.service_account import Credentials
-except ImportError:
-    st.error("📦 Paketlər quraşdırılmayıb. GitHub-da bu skriptlə EYNİ qovluqda "
-             "`requirements.txt` faylı yaradın və içinə bunları yazın, sonra Reboot edin:")
-    st.code("streamlit\ngspread\ngoogle-auth\nrequests\npandas")
-    st.stop()
-
 # ───────────── Tənzimləmələr ─────────────
 FIRST_ROW = 3          # məlumat 3-cü sətirdən başlayır (1-2 başlıqdır)
 LAST_COL = 23          # W sütunu
-TZ = ZoneInfo("Asia/Baku")
+try:
+    TZ = ZoneInfo("Asia/Baku")
+except Exception:
+    TZ = dt.timezone(dt.timedelta(hours=4))
+
+# Apps Script "Web app" ünvanı (Yerləşdir/Deploy-dan sonra aldığınız link)
+SCRIPT_URL = "https://script.google.com/macros/s/AKfycbzDUgbEzTPvaSl8rER7NZZtPMGJePOXZCIevBic7jtQcJuj5BP9a1XdYKDHfCQY6JXUQA/exec"
+SCRIPT_TOKEN = "9c63849298a70dfe"   # Code.gs-dəki TOKEN ilə eyni
 # "rate"       → USD\AZN sütununa məzənnə yazılır (məs. 1.7000)
 # "equivalent" → USD\AZN sütununa AZN qarşılığı yazılır (məbləğ × məzənnə)
 AZN_MODE = "rate"
@@ -63,13 +62,6 @@ st.markdown("""
 
 
 # ───────────── Giriş (şifrə) ─────────────
-def secret(name, default=""):
-    try:
-        return st.secrets.get(name, default)
-    except Exception:
-        return default
-
-
 def gate():
     pw = secret("APP_PASSWORD", "7F2M5ZN")  # Secrets-də APP_PASSWORD yazsanız o keçərli olur
     if st.session_state.get("auth"):
@@ -86,24 +78,30 @@ def gate():
     st.stop()
 
 
-# ───────────── Google Sheets ─────────────
-@st.cache_resource
-def get_ws():
-    creds = Credentials.from_service_account_info(
-        dict(st.secrets["gcp_service_account"]),
-        scopes=["https://www.googleapis.com/auth/spreadsheets"],
-    )
-    sh = gspread.authorize(creds).open_by_key(st.secrets["SHEET_ID"])
-    name = secret("WORKSHEET_NAME", "")
-    return sh.worksheet(name) if name else sh.get_worksheet(0)
+# ───────────── Google Sheets (Apps Script vasitəsilə) ─────────────
+def secret(name, default=""):
+    try:
+        return st.secrets.get(name, default)
+    except Exception:
+        return default
+
+
+def api(payload):
+    url = secret("SCRIPT_URL", SCRIPT_URL)
+    token = secret("SCRIPT_TOKEN", SCRIPT_TOKEN)
+    r = requests.post(url, data=json.dumps({**payload, "token": token}),
+                      headers={"Content-Type": "text/plain"}, timeout=40)
+    r.raise_for_status()
+    data = r.json()
+    if "error" in data:
+        raise RuntimeError(data["error"])
+    return data
 
 
 def to_date(v):
-    if isinstance(v, (int, float)) and not isinstance(v, bool):
-        return dt.date(1899, 12, 30) + dt.timedelta(days=int(v))
     if isinstance(v, str):
         s = v.strip()
-        for f in ("%d %B %Y", "%d %b %Y", "%d.%m.%Y", "%Y-%m-%d", "%d/%m/%Y"):
+        for f in ("%Y-%m-%d", "%d %B %Y", "%d.%m.%Y"):
             try:
                 return dt.datetime.strptime(s, f).date()
             except ValueError:
@@ -112,27 +110,21 @@ def to_date(v):
 
 
 @st.cache_data(ttl=30, show_spinner=False)
-def load_rows(_ws):
-    raw = _ws.get(f"A{FIRST_ROW}:W", value_render_option="UNFORMATTED_VALUE")
-    rows, last = {}, FIRST_ROW - 1
-    for i, r in enumerate(raw):
-        rn = FIRST_ROW + i
-        if any(c not in ("", None) for c in r):
-            last = rn
-        d = to_date(r[0]) if r else None
+def load_rows():
+    data = api({"action": "read"})
+    rows = {}
+    for r in data["rows"]:
+        d = to_date(r["date"])
         if d:
-            rows[d] = (rn, (list(r) + [None] * LAST_COL)[:LAST_COL])
-    return rows, last + 1
+            rows[d] = (r["row"], ([None] + list(r["values"]) + [0] * LAST_COL)[:LAST_COL])
+    return rows, data["next_row"]
 
 
-def save_day(ws, d, values, row, is_new):
-    serial = (d - dt.date(1899, 12, 30)).days
-    line = [serial] + [values.get(c, 0.0) for c in range(2, LAST_COL + 1)]
-    ws.update(values=[line], range_name=f"A{row}:W{row}", value_input_option="USER_ENTERED")
-    if is_new:
-        ws.format(f"A{row}", {"numberFormat": {"type": "DATE", "pattern": "dd mmmm yyyy"},
-                              "horizontalAlignment": "LEFT"})
+def save_day(d, values):
+    line = [values.get(c, 0.0) for c in range(2, LAST_COL + 1)]
+    res = api({"action": "write", "date": d.isoformat(), "values": line})
     load_rows.clear()
+    return res
 
 
 # ───────────── Məzənnə (AMB rəsmi XML) ─────────────
@@ -166,12 +158,11 @@ st.markdown('<div class="hero"><h1>💼 Gündəlik Maliyyə Portalı</h1>'
             unsafe_allow_html=True)
 
 try:
-    ws = get_ws()
-    rows, next_row = load_rows(ws)
+    rows, next_row = load_rows()
 except Exception as e:
     st.error("⚠️ Cədvələ qoşulmaq olmadı.")
-    st.caption("Yoxlayın: ① fayl real Google Sheets formatındadır (xlsx deyil), ② Sheet, service account "
-               "e-poçtuna *Redaktor* kimi paylaşılıb, ③ SHEET_ID düzgündür.")
+    st.caption("Yoxlayın: ① SCRIPT_URL düzgün yapışdırılıb, ② Apps Script-də Who has access = Anyone, "
+               "③ Code.gs-dəki TOKEN ilə eynidir, ④ fayl Google Sheets formatındadır.")
     st.code(str(e))
     st.stop()
 
@@ -275,7 +266,7 @@ if pend and pend["date"] == d:
     b1, b2 = st.columns(2)
     if b1.button("✅ Təsdiqlə və Sheet-ə yaz", type="primary", use_container_width=True):
         try:
-            save_day(ws, d, pend["values"], target, is_new=not existing)
+            save_day(d, pend["values"])
             st.session_state.pop("pending", None)
             st.toast("Cədvələ yazıldı ✅")
             st.success(f"Yazıldı! {d:%d.%m.%Y} · sətir {target}")
