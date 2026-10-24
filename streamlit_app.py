@@ -23,7 +23,7 @@ except Exception:
 
 # Apps Script "Web app" ünvanı (Yerləşdir/Deploy-dan sonra aldığınız link)
 SCRIPT_URL = "https://script.google.com/macros/s/AKfycbzDUgbEzTPvaSl8rER7NZZtPMGJePOXZCIevBic7jtQcJuj5BP9a1XdYKDHfCQY6JXUQA/exec"
-EXPECTED_VERSION = 4   # Code.gs-dəki VERSION ilə uyğun olmalıdır
+EXPECTED_VERSION = 5   # Code.gs-dəki VERSION ilə uyğun olmalıdır
 SCRIPT_TOKEN = "9c63849298a70dfe"   # Code.gs-dəki TOKEN ilə eyni
 # "equivalent" → USD\AZN sütununa AZN qarşılığı avtomatik yazılır (məbləğ × məzənnə)
 #                (məzənnənin özü həmin xananın qeydində (note) saxlanır)
