@@ -246,6 +246,10 @@ st.markdown('<div class="hero"><h1>💼 Gündəlik Maliyyə Portalı</h1>'
             '<p>Günün sonunda məlumatları daxil edin, təsdiqləyin — cədvələ yazılsın</p></div>',
             unsafe_allow_html=True)
 
+if st.session_state.get("flash"):
+    st.success(st.session_state.pop("flash"))
+    st.balloons()
+
 try:
     rows, next_row = load_rows()
 except Exception as e:
@@ -256,24 +260,38 @@ except Exception as e:
     st.stop()
 
 today = dt.datetime.now(TZ).date()
-d = st.date_input("📅 Tarix", value=today, format="DD.MM.YYYY")
+d = st.date_input("📅 Yazılacaq tarix", value=today, format="DD.MM.YYYY")
 iso = d.isoformat()
 
 existing = rows.get(d)
 ex_row, ex_vals, ex_rates = existing if existing else (None, None, None)
-prev_dates = [x for x in rows if x < d]
-prev_vals = rows[max(prev_dates)][1] if prev_dates else None
-# cədvəldəki məlumat dəyişəndə (və ya tarix tapılanda) xanalar cədvəldən yenidən doldurulsun
-sig = hashlib.md5(repr((ex_vals, ex_rates, None if ex_vals else prev_vals)).encode()).hexdigest()[:6]
+
+# Yeni gün üçün: hansı günün məlumatları xanalarda göstərilsin (susmaya görə — ondan əvvəlki ən son gün)
+base_date, base_vals = None, None
+if not existing and rows:
+    all_dates = sorted(rows, reverse=True)
+    earlier = [x for x in all_dates if x < d]
+    options = all_dates + [None]
+    base_date = st.selectbox(
+        "📋 Hansı günün məlumatları göstərilsin?", options,
+        index=options.index(earlier[0]) if earlier else len(options) - 1,
+        format_func=lambda x: "Boş (sıfırdan)" if x is None else f"{x:%d.%m.%Y}",
+        key=f"base_{iso}")
+    base_vals = rows[base_date][1] if base_date else None
+
+# cədvəldəki məlumat dəyişəndə xanalar cədvəldən yenidən doldurulsun
+sig = hashlib.md5(repr((ex_vals, ex_rates, base_date, None if ex_vals else base_vals)).encode()).hexdigest()[:6]
 
 if existing:
-    st.info(f"✏️ Bu tarix cədvəldə var (sətir {ex_row}). Dəyişib təsdiqləsəniz yalnız bu sətir yenilənəcək.")
-elif prev_vals:
-    pd_ = max(prev_dates)
-    st.success(f"🆕 {d:%d.%m.%Y} üçün yeni sətir. Aşağıda {pd_:%d.%m.%Y} məlumatları göstərilir — dəyişdirib "
-               f"təsdiqləsəniz {d:%d.%m.%Y} kimi cədvəlin ən altına yazılacaq, {pd_:%d.%m.%Y} olduğu kimi qalacaq.")
+    st.info(f"✏️ {d:%d.%m.%Y} cədvəldə var (sətir {ex_row}). Təsdiqləsəniz yalnız bu sətir yenilənəcək, "
+            f"digər günlərə toxunulmayacaq.")
 else:
-    st.success("🆕 Yeni gün — məlumatları daxil edin.")
+    msg = f"🆕 {d:%d.%m.%Y} üçün cədvəlin ən altına (sətir {next_row}) yeni sətir yazılacaq."
+    if base_date:
+        msg += f" Aşağıda {base_date:%d.%m.%Y} məlumatları göstərilir — həmin gün olduğu kimi qalacaq."
+    st.success(msg)
+    if any(x > d for x in rows):
+        st.caption("Qeyd: cədvəldə bu tarixdən sonrakı günlər də var; yeni sətir yenə də ən sona əlavə olunacaq.")
 
 with st.expander(f"📋 Cədvəldə {len(rows)} tarix tapıldı"):
     if rows:
@@ -327,7 +345,7 @@ cards.markdown(
 
 
 def default(col):
-    src = ex_vals or prev_vals
+    src = ex_vals or base_vals
     v = src[col - 1] if src else None
     return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else 0.0
 
@@ -367,7 +385,8 @@ if st.button("🔍 Yoxla və təsdiqə göndər", type="primary", use_container_
                                    "rates": [rates[c[0]] for c in CURRENCIES]}
 
 pend = st.session_state.get("pending")
-if pend and pend["date"] == d:
+cur_rates = [rates[c[0]] for c in CURRENCIES]
+if pend and pend["date"] == d and pend["values"] == values and pend["rates"] == cur_rates:
     st.markdown("#### ✅ Təsdiq")
     table = []
     for title, color, fields in SECTIONS:
@@ -381,17 +400,23 @@ if pend and pend["date"] == d:
     target = ex_row or next_row
     st.caption(f"{d:%d.%m.%Y} → cədvəlin {target}-ci sətrinə "
                f"{'yenilənəcək' if existing else 'yeni yazılacaq'}.")
+    ok = True
+    if existing and d < today:
+        st.warning(f"⚠️ {d:%d.%m.%Y} köhnə gündür və cədvəldə artıq var. Təsdiqləsəniz həmin günün sətri dəyişəcək.")
+        ok = st.checkbox("Köhnə günün məlumatını dəyişdirməyə razıyam", key=f"allow_{iso}")
     b1, b2 = st.columns(2)
-    if b1.button("✅ Təsdiqlə və Sheet-ə yaz", type="primary", use_container_width=True):
+    saved = False
+    if b1.button("✅ Təsdiqlə və Sheet-ə yaz", type="primary", use_container_width=True, disabled=not ok):
         try:
             save_day(d, pend["values"], pend["rates"])
-            st.session_state.pop("pending", None)
-            st.toast("Cədvələ yazıldı ✅")
-            st.success(f"Yazıldı! {d:%d.%m.%Y} · sətir {target}")
-            st.balloons()
+            saved = True
         except Exception as e:
             st.error("Yazmaq alınmadı.")
             st.code(str(e))
+    if saved:
+        st.session_state.pop("pending", None)
+        st.session_state["flash"] = f"✅ {d:%d.%m.%Y} cədvələ yazıldı (sətir {target})."
+        st.rerun()
     if b2.button("✖ Ləğv et", use_container_width=True):
         st.session_state.pop("pending", None)
         st.rerun()
