@@ -1,5 +1,6 @@
 import datetime as dt
 import hmac
+import html as htmllib
 import json
 import re
 import xml.etree.ElementTree as ET
@@ -60,6 +61,10 @@ st.markdown("""
 .stNumberInput input{text-align:right}
 </style>
 """, unsafe_allow_html=True)
+
+
+def fmt_rate(x):
+    return f"{x:.4f}" if x >= 0.1 else f"{x:.6f}"
 
 
 # ───────────── Giriş (şifrə) ─────────────
@@ -136,6 +141,34 @@ UA = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.3
 CODES = [c[0] for c in CURRENCIES]
 
 
+AED_PER_USD = 3.6725   # dirhəm dollara sabit bağlıdır
+
+
+def _from_azn_day(d, errs):
+    """azn.day.az — bugünün AMB məzənnələri (USD, EUR, RUB, TRY). AED saytda yoxdur → USD-dən hesablanır."""
+    if d != dt.datetime.now(TZ).date():
+        return None            # saytda yalnız bugünün məzənnəsi var
+    try:
+        r = requests.get("https://azn.day.az/az/", headers=UA, timeout=12)
+        r.raise_for_status()
+        text = htmllib.unescape(re.sub(r"<[^>]+>", " ", r.text))
+        text = re.sub(r"\s+", " ", text)
+        words = {"avro": "EUR", "Rusiya rublu": "RUB", "Türk lirəsi": "TRY", "ABŞ dolları": "USD"}
+        out = {}
+        for m in re.finditer(r"([0-9]+[.,][0-9]+) manat (\d+) (avro|Rusiya rublu|Türk lirəsi|ABŞ dolları) üçün", text):
+            code = words[m.group(3)]
+            if code not in out:     # ilk rast gəlinən = AMB bloku
+                out[code] = float(m.group(1).replace(",", ".")) / float(m.group(2))
+        if not {"USD", "EUR", "RUB", "TRY"} <= set(out):
+            errs.append("azn.day.az: səhifədən məzənnələr oxunmadı")
+            return None
+        out["AED"] = round(out["USD"] / AED_PER_USD, 4)
+        return out, d, "azn.day.az (AMB məzənnəsi; AED dollardan hesablanıb)"
+    except Exception as e:
+        errs.append(f"azn.day.az: {type(e).__name__}")
+        return None
+
+
 def _from_cbar(d, errs):
     """Azərbaycan Mərkəzi Bankının rəsmi XML-i; elan olunmayıbsa ən yaxın əvvəlki gün."""
     for back in range(0, 7):
@@ -178,7 +211,7 @@ def _from_currency_api(d, errs):
                 r = requests.get(url, headers=UA, timeout=12)
                 r.raise_for_status()
                 js = r.json()
-                out = {c: round(1.0 / float(js["azn"][c.lower()]), 4) for c in CODES}
+                out = {c: round(1.0 / float(js["azn"][c.lower()]), 6) for c in CODES}
                 try:
                     day = dt.date.fromisoformat(js.get("date", ""))
                 except ValueError:
@@ -192,7 +225,7 @@ def _from_currency_api(d, errs):
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_cached(d: dt.date):
     errs = []
-    for fn in (_from_cbar, _from_currency_api):
+    for fn in (_from_azn_day, _from_cbar, _from_currency_api):
         res = fn(d, errs)
         if res:
             return {"rates": res[0], "day": res[1], "source": res[2], "errors": errs}
@@ -233,7 +266,9 @@ prev_vals = rows[max(prev_dates)][1] if prev_dates else None
 if existing:
     st.info(f"✏️ Bu tarix cədvəldə var (sətir {ex_row}). Dəyişib təsdiqləsəniz yalnız bu sətir yenilənəcək.")
 elif prev_vals:
-    st.success(f"🆕 Yeni gün — məbləğlər {max(prev_dates):%d.%m.%Y} tarixindən köçürülüb, dəyişənləri düzəldin.")
+    pd_ = max(prev_dates)
+    st.success(f"🆕 {d:%d.%m.%Y} üçün yeni sətir. Aşağıda {pd_:%d.%m.%Y} məlumatları göstərilir — dəyişdirib "
+               f"təsdiqləsəniz {d:%d.%m.%Y} kimi cədvəlin ən altına yazılacaq, {pd_:%d.%m.%Y} olduğu kimi qalacaq.")
 else:
     st.success("🆕 Yeni gün — məlumatları daxil edin.")
 
@@ -257,7 +292,7 @@ for i, (code, sym, color, col) in enumerate(CURRENCIES):
 with st.expander("✏️ Məzənnəni əl ilə düzəlt"):
     for code, sym, color, col in CURRENCIES:
         rates[code] = st.number_input(f"{code} → AZN", value=rates[code], min_value=0.0,
-                                      step=0.0001, format="%.4f", key=f"rate_{code}_{iso}_{rates[code]:.4f}")
+                                      step=0.0001, format="%.6f", key=f"rate_{code}_{iso}_{rates[code]:.6f}")
 if from_sheet:
     st.caption("Mənbə: bu gün üçün cədvəldə saxlanmış məzənnə.")
 elif fetched["rates"]:
@@ -273,7 +308,7 @@ else:
 
 cards.markdown(
     '<div class="rate-grid">' + "".join(
-        f'<div class="rate" style="background:{color}"><b>{code}</b><span>{rates[code]:.4f} ₼</span></div>'
+        f'<div class="rate" style="background:{color}"><b>{code}</b><span>{fmt_rate(rates[code])} ₼</span></div>'
         for code, sym, color, col in CURRENCIES) + '</div>', unsafe_allow_html=True)
 
 
@@ -291,17 +326,17 @@ for title, color, fields in SECTIONS:
         cols = st.columns(2 if len(fields) > 1 else 1)
         for i, (label, col) in enumerate(fields):
             values[col] = cols[i % len(cols)].number_input(
-                label, value=default(col), step=0.01, format="%.2f", key=f"f{col}_{iso}")
+                label, value=default(col), step=1.0, format="%.2f", key=f"f{col}_{iso}")
 
 st.markdown("#### 🌍 Xarici vəsait")
 st.caption("Məbləği yazın — AZN qarşılığı həmin günün məzənnəsi ilə hesablanıb cədvəlin \\AZN sütununa avtomatik yazılacaq.")
 total_azn = 0.0
 for code, sym, color, col in CURRENCIES:
     with st.container(border=True):
-        st.markdown(f'<span class="chip" style="background:{color}">{code} · {rates[code]:.4f} ₼</span>',
+        st.markdown(f'<span class="chip" style="background:{color}">{code} · {fmt_rate(rates[code])} ₼</span>',
                     unsafe_allow_html=True)
         c1, c2 = st.columns([3, 2])
-        amt = c1.number_input(f"{code} məbləği", value=default(col), step=0.01, format="%.2f",
+        amt = c1.number_input(f"{code} məbləği", value=default(col), step=1.0, format="%.2f",
                               key=f"f{col}_{iso}")
         c2.metric("≈ AZN", f"{amt * rates[code]:,.2f} ₼")
         values[col] = amt
