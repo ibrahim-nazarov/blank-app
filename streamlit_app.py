@@ -23,6 +23,7 @@ except Exception:
 
 # Apps Script "Web app" ünvanı (Yerləşdir/Deploy-dan sonra aldığınız link)
 SCRIPT_URL = "https://script.google.com/macros/s/AKfycbzDUgbEzTPvaSl8rER7NZZtPMGJePOXZCIevBic7jtQcJuj5BP9a1XdYKDHfCQY6JXUQA/exec"
+EXPECTED_VERSION = 4   # Code.gs-dəki VERSION ilə uyğun olmalıdır
 SCRIPT_TOKEN = "9c63849298a70dfe"   # Code.gs-dəki TOKEN ilə eyni
 # "equivalent" → USD\AZN sütununa AZN qarşılığı avtomatik yazılır (məbləğ × məzənnə)
 #                (məzənnənin özü həmin xananın qeydində (note) saxlanır)
@@ -69,6 +70,13 @@ def fmt_rate(x):
 
 
 # ───────────── Giriş (şifrə) ─────────────
+def secret(name, default=""):
+    try:
+        return st.secrets.get(name, default)
+    except Exception:
+        return default
+
+
 def gate():
     pw = secret("APP_PASSWORD", "7F2M5ZN")  # Secrets-də APP_PASSWORD yazsanız o keçərli olur
     if st.session_state.get("auth"):
@@ -86,13 +94,6 @@ def gate():
 
 
 # ───────────── Google Sheets (Apps Script vasitəsilə) ─────────────
-def secret(name, default=""):
-    try:
-        return st.secrets.get(name, default)
-    except Exception:
-        return default
-
-
 def api(payload):
     url = secret("SCRIPT_URL", SCRIPT_URL)
     token = secret("SCRIPT_TOKEN", SCRIPT_TOKEN)
@@ -125,12 +126,13 @@ def load_rows():
         if d:
             rows[d] = (r["row"], ([None] + list(r["values"]) + [0] * LAST_COL)[:LAST_COL],
                        list(r.get("rates", [])))
-    return rows, data["next_row"]
+    meta = {"version": data.get("version"), "sheet": data.get("sheet"), "debug": data.get("debug", [])}
+    return rows, data["next_row"], meta
 
 
-def save_day(d, values, rate_list):
+def save_day(d, values, rate_list, row):
     line = [values.get(c, 0.0) for c in range(2, LAST_COL + 1)]
-    res = api({"action": "write", "date": d.isoformat(), "values": line, "rates": rate_list})
+    res = api({"action": "write", "date": d.isoformat(), "row": row, "values": line, "rates": rate_list})
     load_rows.clear()
     return res
 
@@ -140,7 +142,6 @@ UA = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.3
                     "(KHTML, like Gecko) Chrome/124.0 Safari/537.36",
       "Accept": "application/xml,text/xml,application/json,*/*"}
 CODES = [c[0] for c in CURRENCIES]
-
 
 AED_PER_USD = 3.6725   # dirhəm dollara sabit bağlıdır
 
@@ -251,7 +252,7 @@ if st.session_state.get("flash"):
     st.balloons()
 
 try:
-    rows, next_row = load_rows()
+    rows, next_row, meta = load_rows()
 except Exception as e:
     st.error("⚠️ Cədvələ qoşulmaq olmadı.")
     st.caption("Yoxlayın: ① SCRIPT_URL düzgün yapışdırılıb, ② Apps Script-də Who has access = Anyone, "
@@ -263,35 +264,39 @@ today = dt.datetime.now(TZ).date()
 d = st.date_input("📅 Yazılacaq tarix", value=today, format="DD.MM.YYYY")
 iso = d.isoformat()
 
+
+def has_data(vals):
+    return any(isinstance(v, (int, float)) and not isinstance(v, bool) and v != 0 for v in vals[1:])
+
+
 existing = rows.get(d)
 ex_row, ex_vals, ex_rates = existing if existing else (None, None, None)
+editing = bool(existing and has_data(ex_vals))      # həmin tarixdə DOLU sətir var → onu düzəlt
 
-# Yeni gün üçün: hansı günün məlumatları xanalarda göstərilsin (susmaya görə — ondan əvvəlki ən son gün)
+# Dolu sətir yoxdursa → ən yaxın əvvəlki dolu günün məlumatı xanalara dolur
 base_date, base_vals = None, None
-if not existing and rows:
-    all_dates = sorted(rows, reverse=True)
-    earlier = [x for x in all_dates if x < d]
-    options = all_dates + [None]
-    base_date = st.selectbox(
-        "📋 Hansı günün məlumatları göstərilsin?", options,
-        index=options.index(earlier[0]) if earlier else len(options) - 1,
-        format_func=lambda x: "Boş (sıfırdan)" if x is None else f"{x:%d.%m.%Y}",
-        key=f"base_{iso}")
+if not editing:
+    filled = [x for x in rows if x != d and has_data(rows[x][1])]
+    earlier = [x for x in filled if x < d]
+    base_date = max(earlier) if earlier else (min(filled) if filled else None)
     base_vals = rows[base_date][1] if base_date else None
 
-# cədvəldəki məlumat dəyişəndə xanalar cədvəldən yenidən doldurulsun
-sig = hashlib.md5(repr((ex_vals, ex_rates, base_date, None if ex_vals else base_vals)).encode()).hexdigest()[:6]
+target = ex_row if existing else next_row           # yazılacaq sətir (bir dəfə hesablanır)
+src_vals = ex_vals if editing else base_vals        # xanaların dolacağı mənbə
+sig = hashlib.md5(repr((d, editing, target, src_vals, ex_rates if editing else None)).encode()).hexdigest()[:6]
 
-if existing:
-    st.info(f"✏️ {d:%d.%m.%Y} cədvəldə var (sətir {ex_row}). Təsdiqləsəniz yalnız bu sətir yenilənəcək, "
-            f"digər günlərə toxunulmayacaq.")
+if meta.get("version") != EXPECTED_VERSION:
+    st.error("⚠️ Apps Script köhnə versiyadır — tarixlər səhv oxuna bilər. "
+             "Cədvəldə Apps Script-ə yeni Code.gs-i yapışdırın və **Deploy → Manage deployments → ✏️ → "
+             "Version: New version → Deploy** edin.")
+
+if editing:
+    st.info(f"✏️ {d:%d.%m.%Y} cədvəldə var (sətir {target}) — təsdiqləsəniz həmin sətir düzələcək.")
+elif base_date:
+    st.success(f"🆕 {base_date:%d.%m.%Y} məlumatları xanalara dolduruldu. Təsdiqləyəndə {d:%d.%m.%Y} üçün "
+               f"sətir {target} yazılacaq, {base_date:%d.%m.%Y} olduğu kimi qalacaq.")
 else:
-    msg = f"🆕 {d:%d.%m.%Y} üçün cədvəlin ən altına (sətir {next_row}) yeni sətir yazılacaq."
-    if base_date:
-        msg += f" Aşağıda {base_date:%d.%m.%Y} məlumatları göstərilir — həmin gün olduğu kimi qalacaq."
-    st.success(msg)
-    if any(x > d for x in rows):
-        st.caption("Qeyd: cədvəldə bu tarixdən sonrakı günlər də var; yeni sətir yenə də ən sona əlavə olunacaq.")
+    st.success(f"🆕 {d:%d.%m.%Y} üçün sətir {target} yazılacaq. Məlumatları daxil edin.")
 
 with st.expander(f"📋 Cədvəldə {len(rows)} tarix tapıldı"):
     if rows:
@@ -300,6 +305,11 @@ with st.expander(f"📋 Cədvəldə {len(rows)} tarix tapıldı"):
         st.caption(f"Axtarılan tarix: {d:%d.%m.%Y} → " + (f"tapıldı (sətir {ex_row})" if existing else "cədvəldə yoxdur"))
     else:
         st.write("Heç bir tarix oxunmadı — A sütununda (3-cü sətirdən) tarixlərin olduğunu yoxlayın.")
+    st.caption(f"Vərəq: {meta.get('sheet')} · skript versiyası: {meta.get('version')}")
+    if meta.get("debug"):
+        st.caption("A sütununun ilk xanaları (sayt bunları belə oxuyur):")
+        st.dataframe(pd.DataFrame(meta["debug"]).rename(columns={"row": "Sətir", "raw": "Xanada", "kind": "Növ", "parsed": "Tarix kimi"}),
+                     hide_index=True)
     if st.button("🔄 Cədvəli yenidən oxu"):
         load_rows.clear()
         st.rerun()
@@ -311,9 +321,9 @@ fetched = fetch_rates(d)
 rates, from_sheet = {}, False
 for i, (code, sym, color, col) in enumerate(CURRENCIES):
     base = None
-    if ex_rates and i < len(ex_rates) and isinstance(ex_rates[i], (int, float)) and ex_rates[i] > 0:
+    if editing and ex_rates and i < len(ex_rates) and isinstance(ex_rates[i], (int, float)) and ex_rates[i] > 0:
         base, from_sheet = float(ex_rates[i]), True          # həmin gün saxlanmış məzənnə
-    elif ex_vals and AZN_MODE == "rate":
+    elif editing and AZN_MODE == "rate":
         v = ex_vals[col]  # \AZN sütununun indeksi (0-əsaslı)
         if isinstance(v, (int, float)) and v > 0:
             base, from_sheet = float(v), True
@@ -345,8 +355,7 @@ cards.markdown(
 
 
 def default(col):
-    src = ex_vals or base_vals
-    v = src[col - 1] if src else None
+    v = src_vals[col - 1] if src_vals else None
     return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else 0.0
 
 
@@ -397,18 +406,13 @@ if pend and pend["date"] == d and pend["values"] == values and pend["rates"] == 
         table.append((f"{code}\\AZN", f"{pend['values'][col + 1]:,.4f}" if AZN_MODE == "rate"
                       else f"{pend['values'][col + 1]:,.2f}"))
     st.dataframe(pd.DataFrame(table, columns=["Sahə", "Dəyər"]), hide_index=True)
-    target = ex_row or next_row
     st.caption(f"{d:%d.%m.%Y} → cədvəlin {target}-ci sətrinə "
-               f"{'yenilənəcək' if existing else 'yeni yazılacaq'}.")
-    ok = True
-    if existing and d < today:
-        st.warning(f"⚠️ {d:%d.%m.%Y} köhnə gündür və cədvəldə artıq var. Təsdiqləsəniz həmin günün sətri dəyişəcək.")
-        ok = st.checkbox("Köhnə günün məlumatını dəyişdirməyə razıyam", key=f"allow_{iso}")
+               f"{'yenilənəcək' if editing else 'yazılacaq'}.")
     b1, b2 = st.columns(2)
     saved = False
-    if b1.button("✅ Təsdiqlə və Sheet-ə yaz", type="primary", use_container_width=True, disabled=not ok):
+    if b1.button("✅ Təsdiqlə və Sheet-ə yaz", type="primary", use_container_width=True):
         try:
-            save_day(d, pend["values"], pend["rates"])
+            save_day(d, pend["values"], pend["rates"], target)
             saved = True
         except Exception as e:
             st.error("Yazmaq alınmadı.")
