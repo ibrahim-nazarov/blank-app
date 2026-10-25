@@ -142,6 +142,15 @@ div[data-testid="stVerticalBlockBorderWrapper"] div[data-testid="stVerticalBlock
 """, unsafe_allow_html=True)
 
 
+def cell(vals, i):
+    """Siyahıdan rəqəm oxuyur; xana yoxdursa (qısa sətir) 0 qaytarır."""
+    try:
+        v = vals[i]
+    except (IndexError, TypeError):
+        return 0.0
+    return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else 0.0
+
+
 def fmt_rate(x):
     return f"{x:.4f}" if x >= 0.1 else f"{x:.6f}"
 
@@ -201,13 +210,13 @@ def to_date(v):
 
 
 @st.cache_data(ttl=30, show_spinner=False)
-def load_rows():
+def load_rows(last_col):
     data = api({"action": "read"})
     rows = {}
     for r in data["rows"]:
         d = to_date(r["date"])
         if d:
-            rows[d] = (r["row"], ([None] + list(r["values"]) + [0] * LAST_COL)[:LAST_COL],
+            rows[d] = (r["row"], ([None] + list(r["values"]) + [0] * last_col)[:last_col],
                        list(r.get("rates", [])))
     meta = {"version": data.get("version"), "sheet": data.get("sheet"), "debug": data.get("debug", [])}
     return rows, data["next_row"], meta
@@ -348,10 +357,10 @@ def build_history(rows, fb_rates):
                 known[i] = float(rts[i])
         g = {name: 0.0 for name in GROUP_COLORS}
         for col, label, grp in LOCAL_FIELDS:
-            g[grp] += float(vals[col - 1] or 0)
+            g[grp] += cell(vals, col - 1)
         fx = 0.0
         for i, (code, sym, color, col) in enumerate(CURRENCIES):
-            amt, azn = float(vals[col - 1] or 0), float(vals[col] or 0)
+            amt, azn = cell(vals, col - 1), cell(vals, col)
             if AZN_MODE == "rate":
                 fx += amt * azn if azn > 0 else amt * (known[i] or fb_rates.get(code, 0))
             elif azn > 0:
@@ -401,7 +410,7 @@ def build_fx_history(rows, fb_rates):
     for d in sorted(rows):
         _, vals, rts = rows[d]
         for i, (code, sym, color, col) in enumerate(CURRENCIES):
-            amt, azn = float(vals[col - 1] or 0), float(vals[col] or 0)
+            amt, azn = cell(vals, col - 1), cell(vals, col)
             note = float(rts[i]) if i < len(rts) and isinstance(rts[i], (int, float)) and rts[i] > 0 else 0.0
             if note:
                 rate, src = note, "qeyd"
@@ -589,7 +598,7 @@ if st.session_state.get("flash"):
     st.balloons()
 
 try:
-    rows, next_row, meta = load_rows()
+    rows, next_row, meta = load_rows(LAST_COL)
 except Exception as e:
     st.error("⚠️ Cədvələ qoşulmaq olmadı.")
     st.caption("Yoxlayın: ① SCRIPT_URL düzgündür, ② Apps Script-də Who has access = Anyone, "
@@ -643,8 +652,7 @@ else:
 
 def default(col):
     src = ex_vals or base_vals
-    v = src[col - 1] if src else None
-    return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else 0.0
+    return cell(src, col - 1) if src else 0.0
 
 
 # ── Məzənnə
@@ -655,9 +663,9 @@ for i, (code, sym, color, col) in enumerate(CURRENCIES):
     if ex_rates and i < len(ex_rates) and isinstance(ex_rates[i], (int, float)) and ex_rates[i] > 0:
         base, from_sheet = float(ex_rates[i]), True          # həmin gün saxlanmış məzənnə
     elif ex_vals and AZN_MODE == "rate":
-        v = ex_vals[col]
-        if isinstance(v, (int, float)) and v > 0:
-            base, from_sheet = float(v), True
+        v = cell(ex_vals, col)
+        if v > 0:
+            base, from_sheet = v, True
     if base is None and fetched["rates"]:
         base = fetched["rates"].get(code)
     rates[code] = base or 0.0
