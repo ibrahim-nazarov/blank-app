@@ -111,6 +111,14 @@ div[role="radiogroup"] > label:has(input:checked) p { color:#fff !important; fon
     background:linear-gradient(135deg,#2563eb,#7c3aed); border:0; color:#fff; }
 div[data-testid="stVerticalBlockBorderWrapper"] { border-radius:18px; }
 div[data-testid="stExpander"] { border-radius:16px; }
+.fxcards { display:grid; grid-template-columns:repeat(5,1fr); gap:6px; margin:6px 0 2px; }
+.fxc { border-top:3px solid var(--c); background:rgba(128,128,128,.10); border-radius:10px; padding:6px 4px; text-align:center; }
+.fxc b { display:block; font-size:.66rem; opacity:.8; }
+.fxc span { display:block; font-size:.76rem; font-weight:700; }
+.fxc em { display:block; font-style:normal; font-size:.64rem; font-weight:600; opacity:.7; }
+.fxc em.up { color:#16a34a; opacity:1; }
+.fxc em.down { color:#dc2626; opacity:1; }
+.fxnote { font-size:.66rem; opacity:.6; text-align:center; margin-bottom:6px; }
 .card-head { display:flex; justify-content:space-between; align-items:baseline; margin-bottom:2px; }
 .card-head span { font-weight:700; font-size:.98rem; }
 .card-head b { font-size:.95rem; opacity:.9; }
@@ -369,6 +377,145 @@ def draw_chart(df, cols, mode):
             st.line_chart(df.set_index("Tarix")[cols])
 
 
+FX_METRICS = ["Eyni məbləğin qazancı/itkisi (₼)", "Məzənnə dəyişməsi (%)", "AZN dəyəri (₼)", "Məzənnə (₼)"]
+REAL_SRC = ("qeyd", "xana", "hesab")   # həqiqi (saxlanmış/hesablanmış) məzənnə mənbələri
+
+
+def build_fx_history(rows, fb_rates):
+    """Hər gün × hər valyuta: məbləğ, məzənnə, AZN dəyəri."""
+    recs, known = [], [0.0] * len(CURRENCIES)
+    for d in sorted(rows):
+        _, vals, rts = rows[d]
+        for i, (code, sym, color, col) in enumerate(CURRENCIES):
+            amt, azn = float(vals[col - 1] or 0), float(vals[col] or 0)
+            note = float(rts[i]) if i < len(rts) and isinstance(rts[i], (int, float)) and rts[i] > 0 else 0.0
+            if note:
+                rate, src = note, "qeyd"
+            elif AZN_MODE == "rate" and azn > 0:
+                rate, src = azn, "xana"
+            elif AZN_MODE != "rate" and amt > 0 and azn > 0:
+                rate, src = azn / amt, "hesab"
+            elif known[i]:
+                rate, src = known[i], "köçürülüb"
+            else:
+                rate, src = float(fb_rates.get(code, 0.0)), "təxmini"
+            if src in REAL_SRC:
+                known[i] = rate
+            recs.append({"Tarix": pd.Timestamp(d), "Valyuta": code, "Məbləğ": amt, "Məzənnə": rate,
+                         "Mənbə": src, "AZN": amt * rate})
+    return pd.DataFrame(recs)
+
+
+def draw_fx_chart(df, codes, zero_rule):
+    try:
+        import altair as alt
+        colors = {c[0]: c[2] for c in CURRENCIES}
+        x = alt.X("Tarix:T", title=None, axis=alt.Axis(format="%d.%m", tickCount="day", labelOverlap=True))
+        lines = alt.Chart(df).mark_line(point=True, strokeWidth=2.5).encode(
+            x=x, y=alt.Y("Dəyər:Q", title=None, scale=alt.Scale(zero=False)),
+            color=alt.Color("Valyuta:N", scale=alt.Scale(domain=codes, range=[colors[c] for c in codes]),
+                            legend=alt.Legend(orient="bottom", title=None)),
+            tooltip=[alt.Tooltip("Tarix:T", title="Tarix", format="%d.%m.%Y"), alt.Tooltip("Valyuta:N"),
+                     alt.Tooltip("Dəyər:Q", title="Dəyər", format=",.4f")])
+        chart = lines
+        if zero_rule:
+            rule = alt.Chart(pd.DataFrame({"y": [0]})).mark_rule(strokeDash=[5, 4], opacity=0.5).encode(y="y:Q")
+            chart = lines + rule
+        st.altair_chart(chart.properties(height=300, width="container"))
+    except Exception:
+        st.line_chart(df.pivot(index="Tarix", columns="Valyuta", values="Dəyər"))
+
+
+def render_fx(rows, fb_rates, days):
+    fx = build_fx_history(rows, fb_rates)
+    if days:
+        fx = fx[fx["Tarix"] >= fx["Tarix"].max() - pd.Timedelta(days=days - 1)]
+    st.markdown('<div class="card-title" style="font-size:1.1rem;margin:1.1rem 0 .3rem">🌍 Valyuta üzrə izləmə</div>',
+                unsafe_allow_html=True)
+    all_codes = [c[0] for c in CURRENCIES]
+    held = [c for c in all_codes if (fx[(fx["Valyuta"] == c)]["Məbləğ"] > 0).any()]
+    with st.container(border=True):
+        pick = st.multiselect("Valyutalar", all_codes, default=held or all_codes, key="fx_codes")
+        metric = st.selectbox("Nəyi izləyim?", FX_METRICS, key="fx_metric")
+    if not pick:
+        st.info("Valyuta seçin.")
+        return
+
+    plot, summary, cards, skipped = [], [], [], []
+    for code in pick:
+        full = fx[fx["Valyuta"] == code].sort_values("Tarix")
+        real = full[full["Mənbə"].isin(REAL_SRC)]
+        last_amt = float(full["Məbləğ"].iloc[-1])
+        fixed = last_amt if last_amt > 0 else float(full["Məbləğ"].max())
+        cur_rate = float(full["Məzənnə"].iloc[-1])
+        row = {"Valyuta": code, "Məbləğ": last_amt, "Məzənnə": cur_rate, "AZN dəyəri": last_amt * cur_rate,
+               "Son gün %": None, "Son gün ₼": None, "Dövr %": None, "Dövr ₼": None}
+        day_pct = None
+        if len(real) >= 1:
+            first, last = float(real["Məzənnə"].iloc[0]), float(real["Məzənnə"].iloc[-1])
+            if first > 0:
+                row["Dövr %"] = (last / first - 1) * 100
+                row["Dövr ₼"] = (last - first) * fixed
+            if len(real) >= 2:
+                prev = float(real["Məzənnə"].iloc[-2])
+                if prev > 0:
+                    day_pct = (last / prev - 1) * 100
+                    row["Son gün %"], row["Son gün ₼"] = day_pct, (last - prev) * last_amt
+            # qrafik üçün
+            if first > 0:
+                if metric == FX_METRICS[0]:
+                    if fixed > 0:
+                        plot.append(pd.DataFrame({"Tarix": real["Tarix"], "Valyuta": code,
+                                                  "Dəyər": (real["Məzənnə"] - first) * fixed}))
+                    else:
+                        skipped.append(code)
+                elif metric == FX_METRICS[1]:
+                    plot.append(pd.DataFrame({"Tarix": real["Tarix"], "Valyuta": code,
+                                              "Dəyər": (real["Məzənnə"] / first - 1) * 100}))
+                elif metric == FX_METRICS[3]:
+                    plot.append(pd.DataFrame({"Tarix": real["Tarix"], "Valyuta": code, "Dəyər": real["Məzənnə"]}))
+        if metric == FX_METRICS[2]:
+            plot.append(pd.DataFrame({"Tarix": full["Tarix"], "Valyuta": code, "Dəyər": full["AZN"]}))
+        summary.append(row)
+        if day_pct is None:
+            arrow, cls = "—", ""
+        else:
+            arrow, cls = (f"▲ {day_pct:+.2f}%", "up") if day_pct > 0 else (f"▼ {day_pct:+.2f}%", "down") if day_pct < 0 else ("● 0.00%", "")
+        color = [c[2] for c in CURRENCIES if c[0] == code][0]
+        cards.append(f'<div class="fxc" style="--c:{color}"><b>{code}</b><span>{fmt_rate(cur_rate)} ₼</span>'
+                     f'<em class="{cls}">{arrow}</em></div>')
+
+    st.markdown('<div class="fxcards">' + "".join(cards) + '</div><div class="fxnote">Dünənə görə məzənnə dəyişməsi</div>',
+                unsafe_allow_html=True)
+
+    if plot:
+        df = pd.concat(plot, ignore_index=True)
+        draw_fx_chart(df, [c for c in pick if c in set(df["Valyuta"])], metric in FX_METRICS[:2])
+    else:
+        st.info("Qrafik üçün kifayət qədər məlumat yoxdur (məzənnə qeydi olan ən azı 2 gün lazımdır).")
+    notes = {
+        FX_METRICS[0]: "Son gündəki məbləğ dəyişməsiz qalsaydı, dövrün əvvəlindən bəri yalnız məzənnə hesabına nə qədər ₼ "
+                       "qazanıb (+) və ya itirərdiniz (−). Məbləğin özünün dəyişməsi bura təsir etmir.",
+        FX_METRICS[1]: "Dövrün ilk gününə nisbətən məzənnənin dəyişməsi — fərqli valyutaları bir-biri ilə müqayisə etmək üçün.",
+        FX_METRICS[2]: "Həmin gün sizdə olan məbləğ × həmin günün məzənnəsi (məbləğin dəyişməsi də daxildir).",
+        FX_METRICS[3]: "1 vahid valyutanın ₼ qiyməti. Valyutaların qiyməti çox fərqli olduğundan, birini seçib baxmaq daha aydındır.",
+    }
+    st.caption(notes[metric])
+    if skipped:
+        st.caption("Məbləği olmayan valyutalar bu göstəricidə göstərilmir: " + ", ".join(skipped))
+
+    def f(v, fmt):
+        return "—" if v is None or pd.isna(v) else fmt.format(v)
+    table = pd.DataFrame([{
+        "Valyuta": r["Valyuta"], "Məbləğ": f"{r['Məbləğ']:,.2f}", "Məzənnə": fmt_rate(r["Məzənnə"]),
+        "AZN dəyəri": f"{r['AZN dəyəri']:,.2f}", "Son gün %": f(r["Son gün %"], "{:+.2f}%"),
+        "Son gün ₼": f(r["Son gün ₼"], "{:+,.2f}"), "Dövr %": f(r["Dövr %"], "{:+.2f}%"),
+        "Dövr ₼": f(r["Dövr ₼"], "{:+,.2f}")} for r in summary])
+    with st.expander("📋 Valyuta cədvəli"):
+        st.dataframe(table, hide_index=True)
+        st.caption("«₼» sütunları: həmin dövrdə məzənnə dəyişməsinin sizdəki məbləğə təsiri.")
+
+
 def render_dynamics(rows, today):
     st.markdown('<div class="card-title" style="font-size:1.3rem;margin:.6rem 0 .4rem">📈 Gündəlik dinamika</div>',
                 unsafe_allow_html=True)
@@ -410,6 +557,8 @@ def render_dynamics(rows, today):
     if use_fx:
         st.caption("Xarici vəsait hər günün öz məzənnəsi ilə AZN-ə çevrilib. AZN qarşılığı və məzənnə qeydi olmayan "
                    "köhnə günlər üçün ən yaxın məlum (və ya bugünkü) məzənnə istifadə olunur.")
+    render_fx(rows, fetched.get("rates") or {}, periods[period])
+
     with st.expander("📋 Gün-gün cədvəl"):
         show = hist[["Tarix"] + cols + ["Cəmi"]].copy()
         show["Tarix"] = show["Tarix"].dt.strftime("%d.%m.%Y")
