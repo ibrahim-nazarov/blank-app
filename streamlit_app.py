@@ -5,6 +5,7 @@ import hashlib
 import hmac
 import html as htmllib
 import json
+import random
 import re
 import xml.etree.ElementTree as ET
 from zoneinfo import ZoneInfo
@@ -121,6 +122,22 @@ div[data-testid="stExpander"] { border-radius:16px; }
 .fxc em.up { color:#16a34a; opacity:1; }
 .fxc em.down { color:#dc2626; opacity:1; }
 .fxnote { font-size:.66rem; opacity:.6; text-align:center; margin-bottom:6px; }
+.rain { position:fixed; top:0; left:0; right:0; bottom:0; pointer-events:none; z-index:99999; overflow:hidden; }
+.rain i { position:absolute; top:-70px; font-style:normal; animation-name:rainfall; animation-timing-function:linear; animation-fill-mode:forwards; }
+.rain .coin { border-radius:50%; display:flex; align-items:center; justify-content:center; font-weight:800; color:#7a5200;
+    background:radial-gradient(circle at 30% 28%,#fff6bf,#f7c823 52%,#b8860b); border:2px solid #c99a1a; box-shadow:0 3px 8px rgba(0,0,0,.28); }
+@keyframes rainfall { 0% { transform:translateY(0) rotate(0deg); opacity:1; } 85% { opacity:1; }
+    100% { transform:translateY(115vh) rotate(540deg); opacity:0; } }
+.gain { border-radius:20px; padding:14px 18px; margin:6px 0 12px; text-align:center; border:1px solid rgba(128,128,128,.3); }
+.gain small { display:block; opacity:.8; font-size:.8rem; }
+.gain b { display:block; font-size:2.2rem; font-weight:800; letter-spacing:-.5px; line-height:1.2; }
+.gain span { font-size:.78rem; opacity:.75; }
+.gain.up { background:rgba(34,197,94,.14); border-color:rgba(34,197,94,.5); }
+.gain.up b { color:#22c55e; }
+.gain.down { background:rgba(239,68,68,.13); border-color:rgba(239,68,68,.5); }
+.gain.down b { color:#ef4444; }
+.gain.flat { background:rgba(128,128,128,.12); }
+.dl.up { color:#22c55e; } .dl.down { color:#ef4444; }
 .card-head { display:flex; justify-content:space-between; align-items:baseline; margin-bottom:2px; }
 .card-head span { font-weight:700; font-size:.98rem; }
 .card-head b { font-size:.95rem; opacity:.9; }
@@ -588,14 +605,64 @@ def render_dynamics(rows, today):
         st.dataframe(show.iloc[::-1], hide_index=True)
 
 
+# ───────────── Təsdiqdən sonra: coin / smaylik yağışı ─────────────
+def total_of_day(rows, day, fb_rates):
+    """Verilmiş günün ümumi vəsaiti (AZN) — əvvəlki günlə müqayisə üçün."""
+    hist = build_history(rows, fb_rates)
+    r = hist[hist["Tarix"] == pd.Timestamp(day)]
+    return float(r[list(GROUP_COLORS)].sum(axis=1).iloc[0]) if len(r) else None
+
+
+def rain_html(kind):
+    rnd = random.Random()
+    items = []
+    if kind == "up":
+        for _ in range(36):
+            size = rnd.randint(26, 42)
+            items.append(f'<i class="coin" style="left:{rnd.uniform(1, 95):.1f}%;width:{size}px;height:{size}px;'
+                         f'font-size:{int(size * 0.55)}px;animation-duration:{rnd.uniform(2.4, 4.4):.2f}s;'
+                         f'animation-delay:{rnd.uniform(0, 1.8):.2f}s">₼</i>')
+    elif kind == "down":
+        for _ in range(20):
+            items.append(f'<i style="left:{rnd.uniform(1, 94):.1f}%;font-size:{rnd.randint(26, 40)}px;'
+                         f'animation-duration:{rnd.uniform(3.0, 5.0):.2f}s;animation-delay:{rnd.uniform(0, 1.6):.2f}s">'
+                         f'{rnd.choice(["😢", "😞", "😟", "🥲"])}</i>')
+    return '<div class="rain">' + "".join(items) + "</div>" if items else ""
+
+
+def show_flash(f):
+    if isinstance(f, str):
+        st.success(f)
+        return
+    st.success(f["msg"])
+    total, prev, prev_date = f["total"], f.get("prev_total"), f.get("prev_date")
+    if prev is None:
+        st.markdown(f'<div class="gain flat"><small>😊 İlk qeyd · cəmi vəsait</small><b>{money(total)} ₼</b></div>',
+                    unsafe_allow_html=True)
+        return
+    delta = total - prev
+    if delta > 0.004:
+        kind, face, sign, label = "up", "😄", "+", "Balans artdı"
+    elif delta < -0.004:
+        kind, face, sign, label = "down", "😢", "−", "Balans azaldı"
+    else:
+        kind, face, sign, label = "flat", "😐", "", "Balans dəyişmədi"
+    rain = rain_html(kind)
+    if rain:
+        st.markdown(rain, unsafe_allow_html=True)
+    st.markdown(f'<div class="gain {kind}"><small>{face} {label} · {prev_date:%d.%m.%Y} gününə görə</small>'
+                f'<b>{sign}{money(abs(delta))} ₼</b><span>{money(prev)} ₼ → {money(total)} ₼</span></div>',
+                unsafe_allow_html=True)
+
+
 # ═════════════ Səhifə ═════════════
 gate()
 st.markdown('<div class="topbar"><div class="logo">💼 Maliyyə portalı</div></div>', unsafe_allow_html=True)
 page = st.radio("Səhifə", PAGES, horizontal=True, key="page", label_visibility="collapsed")
 
-if st.session_state.get("flash"):
-    st.success(st.session_state.pop("flash"))
-    st.balloons()
+flash = st.session_state.pop("flash", None)
+if flash:
+    show_flash(flash)
 
 try:
     rows, next_row, meta = load_rows(LAST_COL)
@@ -775,9 +842,18 @@ if st.button("🔍 Yoxla və təsdiqə göndər", type="primary"):
 pend = st.session_state.get("pending")
 if pend and pend["date"] == d and pend["values"] == values and pend["rates"] == cur_rates:
     target = ex_row or next_row
+    prev_days = [x for x in rows if x < d]
+    prev_day = max(prev_days) if prev_days else None
+    prev_total = total_of_day(rows, prev_day, fetched.get("rates") or {}) if prev_day else None
+    delta_txt = ""
+    if prev_total is not None:
+        dl = grand - prev_total
+        cls = "up" if dl > 0.004 else "down" if dl < -0.004 else ""
+        delta_txt = (f' · {prev_day:%d.%m} gününə görə <b class="dl {cls}">'
+                     f'{"+" if dl > 0.004 else "−" if dl < -0.004 else ""}{money(abs(dl))} ₼</b>')
     st.markdown(f'<div class="pill {"edit" if existing else "new"}">✅ <b>{d:%d.%m.%Y}</b> → cədvəlin <b>{target}-ci sətri</b> '
                 f'({"yenilənəcək" if existing else "yeni yazılacaq"}) · Cəmi <b>{money(grand)} ₼</b> · '
-                f'xarici olmadan <b>{money(local_total)} ₼</b></div>', unsafe_allow_html=True)
+                f'xarici olmadan <b>{money(local_total)} ₼</b>{delta_txt}</div>', unsafe_allow_html=True)
     with st.expander("Bütün xanalara bax"):
         table = [(lbl, money(pend["values"][c])) for c, lbl, g in LOCAL_FIELDS]
         for code, sym, color, col in CURRENCIES:
@@ -796,7 +872,8 @@ if pend and pend["date"] == d and pend["values"] == values and pend["rates"] == 
             st.code(str(e))
     if saved:
         st.session_state.pop("pending", None)
-        st.session_state["flash"] = f"✅ {d:%d.%m.%Y} cədvələ yazıldı (sətir {target})."
+        st.session_state["flash"] = {"msg": f"✅ {d:%d.%m.%Y} cədvələ yazıldı (sətir {target}).",
+                                     "total": grand, "prev_total": prev_total, "prev_date": prev_day}
         st.rerun()
     if b2.button("✖ Ləğv et"):
         st.session_state.pop("pending", None)
