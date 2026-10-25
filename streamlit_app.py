@@ -17,7 +17,7 @@ st.set_page_config(page_title="Maliyyə portalı", page_icon="💼", layout="cen
 
 # ───────────── Tənzimləmələr ─────────────
 FIRST_ROW = 3          # məlumat 3-cü sətirdən başlayır (1-2 başlıqdır)
-LAST_COL = 23          # W sütunu
+LAST_COL = 25          # Y sütunu (valyuta əlavə etsəniz bunu artırın)
 try:
     TZ = ZoneInfo("Asia/Baku")
 except Exception:
@@ -25,7 +25,7 @@ except Exception:
 
 # Apps Script "Web app" ünvanı (Yerləşdir/Deploy-dan sonra aldığınız link)
 SCRIPT_URL = "https://script.google.com/macros/s/AKfycbzDUgbEzTPvaSl8rER7NZZtPMGJePOXZCIevBic7jtQcJuj5BP9a1XdYKDHfCQY6JXUQA/exec"
-EXPECTED_VERSION = 6   # Code.gs-dəki VERSION ilə uyğun olmalıdır
+EXPECTED_VERSION = 7   # Code.gs-dəki VERSION ilə uyğun olmalıdır
 SCRIPT_TOKEN = "9c63849298a70dfe"   # Code.gs-dəki TOKEN ilə eyni
 # "equivalent" → USD\AZN sütununa AZN qarşılığı avtomatik yazılır (məbləğ × məzənnə)
 #                (məzənnənin özü həmin xananın qeydində (note) saxlanır)
@@ -53,12 +53,14 @@ GROUP_COLORS = {
     "Kapital bank": "#2E75B6", "m10": "#548235", "Yelo bank": "#BF8F00", "Leobank": "#7030A0",
     "Ubank": "#C55A11", "Gündəlik nağd": "#2F5597", "Kassada nağd": "#00796B", FX_NAME: "#C00000",
 }
-CURRENCIES = [  # (kod, simvol, rəng, məbləğ sütunu)  — növbəti sütun \AZN-dir
-    ("USD", "$", "#2E7D32", 14),
-    ("EUR", "€", "#1565C0", 16),
-    ("RUB", "₽", "#C62828", 18),
-    ("AED", "Dh", "#EF6C00", 20),
-    ("TRY", "₺", "#6A1B9A", 22),
+CURRENCIES = [  # (kod, simvol, rəng, məbləğ sütunu)  — növbəti sütun \AZN-dir. Cədvəldəki ardıcıllıqla eyni olmalıdır.
+    ("USD", "$", "#2E7D32", 14),   # N, O
+    ("EUR", "€", "#1565C0", 16),   # P, Q
+    ("RUB", "₽", "#C62828", 18),   # R, S
+    ("AED", "Dh", "#EF6C00", 20),  # T, U
+    ("CNY", "¥", "#B8860B", 22),   # V, W
+    ("TRY", "₺", "#6A1B9A", 24),   # X, Y
+    # Yeni valyuta: cədvələ iki sütun (məbləğ + \AZN) əlavə edin, bura bir sətir yazın, LAST_COL-u artırın.
 ]
 PAGES = ["✏️ Gündəlik giriş", "📈 Dinamika"]
 
@@ -98,7 +100,7 @@ div[role="radiogroup"] > label:has(input:checked) p { color:#fff !important; fon
 .pill.new { background:rgba(34,197,94,.12); border-color:rgba(34,197,94,.35); }
 .pill.edit { background:rgba(59,130,246,.12); border-color:rgba(59,130,246,.35); }
 .card-title { font-weight:700; font-size:.95rem; margin:0 0 2px; }
-.rates { display:grid; grid-template-columns:repeat(5,1fr); gap:6px; margin:4px 0 6px; }
+.rates { display:grid; grid-template-columns:repeat(var(--n,6),1fr); gap:6px; margin:4px 0 6px; }
 .rate { border-radius:12px; padding:7px 3px; color:#fff; text-align:center; }
 .rate b { display:block; font-size:.64rem; opacity:.92; }
 .rate span { font-size:.76rem; font-weight:700; }
@@ -111,7 +113,7 @@ div[role="radiogroup"] > label:has(input:checked) p { color:#fff !important; fon
     background:linear-gradient(135deg,#2563eb,#7c3aed); border:0; color:#fff; }
 div[data-testid="stVerticalBlockBorderWrapper"] { border-radius:18px; }
 div[data-testid="stExpander"] { border-radius:16px; }
-.fxcards { display:grid; grid-template-columns:repeat(5,1fr); gap:6px; margin:6px 0 2px; }
+.fxcards { display:grid; grid-template-columns:repeat(var(--n,6),1fr); gap:6px; margin:6px 0 2px; }
 .fxc { border-top:3px solid var(--c); background:rgba(128,128,128,.10); border-radius:10px; padding:6px 4px; text-align:center; }
 .fxc b { display:block; font-size:.66rem; opacity:.8; }
 .fxc span { display:block; font-size:.76rem; font-weight:700; }
@@ -177,7 +179,8 @@ def secret(name, default=""):
 def api(payload):
     url = secret("SCRIPT_URL", SCRIPT_URL)
     token = secret("SCRIPT_TOKEN", SCRIPT_TOKEN)
-    r = requests.post(url, data=json.dumps({**payload, "token": token}),
+    layout = {"last_col": LAST_COL, "rate_cols": [c[3] + 1 for c in CURRENCIES], "codes": [c[0] for c in CURRENCIES]}
+    r = requests.post(url, data=json.dumps({**layout, **payload, "token": token}),
                       headers={"Content-Type": "text/plain"}, timeout=40)
     r.raise_for_status()
     data = r.json()
@@ -236,9 +239,9 @@ def _from_azn_day(d, errs):
         r.raise_for_status()
         text = htmllib.unescape(re.sub(r"<[^>]+>", " ", r.text))
         text = re.sub(r"\s+", " ", text)
-        words = {"avro": "EUR", "Rusiya rublu": "RUB", "Türk lirəsi": "TRY", "ABŞ dolları": "USD"}
+        words = {"avro": "EUR", "Rusiya rublu": "RUB", "Türk lirəsi": "TRY", "ABŞ dolları": "USD", "Çin yuanı": "CNY"}
         out = {}
-        for m in re.finditer(r"([0-9]+[.,][0-9]+) manat (\d+) (avro|Rusiya rublu|Türk lirəsi|ABŞ dolları) üçün", text):
+        for m in re.finditer(r"([0-9]+[.,][0-9]+) manat (\d+) (avro|Rusiya rublu|Türk lirəsi|ABŞ dolları|Çin yuanı) üçün", text):
             code = words[m.group(3)]
             if code not in out:     # ilk rast gəlinən = AMB bloku
                 out[code] = float(m.group(1).replace(",", ".")) / float(m.group(2))
@@ -273,9 +276,9 @@ def _from_cbar(d, errs):
                 if code in CODES:
                     nominal = float(re.sub(r"[^\d]", "", v.findtext("Nominal") or "1") or 1)
                     out[code] = float(v.findtext("Value").replace(",", ".")) / nominal
-            if set(CODES) <= set(out):
+            if out:
                 return out, day, "Azərbaycan Mərkəzi Bankı (cbar.az)"
-            errs.append(f"cbar.az: {day:%d.%m.%Y} faylında bütün valyutalar yoxdur")
+            errs.append(f"cbar.az: {day:%d.%m.%Y} faylında lazım olan valyutalar yoxdur")
         except Exception as e:
             errs.append(f"cbar.az: XML oxunmadı ({type(e).__name__})")
         return None
@@ -294,7 +297,7 @@ def _from_currency_api(d, errs):
                 r = requests.get(url, headers=UA, timeout=12)
                 r.raise_for_status()
                 js = r.json()
-                out = {c: round(1.0 / float(js["azn"][c.lower()]), 6) for c in CODES}
+                out = {c: round(1.0 / float(js["azn"][c.lower()]), 6) for c in CODES if js["azn"].get(c.lower())}
                 try:
                     day = dt.date.fromisoformat(js.get("date", ""))
                 except ValueError:
@@ -307,12 +310,23 @@ def _from_currency_api(d, errs):
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_cached(d: dt.date):
-    errs = []
+    """Mənbələri sıra ilə yoxlayır; birində olmayan valyutanı növbəti mənbədən tamamlayır."""
+    errs, rates, labels, day = [], {}, [], None
     for fn in (_from_azn_day, _from_cbar, _from_currency_api):
+        if all(c in rates for c in CODES):
+            break
         res = fn(d, errs)
-        if res:
-            return {"rates": res[0], "day": res[1], "source": res[2], "errors": errs}
-    raise RuntimeError(" | ".join(errs) or "naməlum xəta")   # uğursuz nəticə keşlənmir
+        if not res:
+            continue
+        got = {c: v for c, v in res[0].items() if c in CODES and c not in rates}
+        if got:
+            rates.update(got)
+            labels.append(res[2] if len(got) == len(CODES) else f"{res[2]} [{', '.join(got)}]")
+            day = day or res[1]
+    if not rates:
+        raise RuntimeError(" | ".join(errs) or "naməlum xəta")   # uğursuz nəticə keşlənmir
+    return {"rates": rates, "day": day, "source": " + ".join(labels), "errors": errs,
+            "missing": [c for c in CODES if c not in rates]}
 
 
 def fetch_rates(d):
@@ -485,7 +499,7 @@ def render_fx(rows, fb_rates, days):
         cards.append(f'<div class="fxc" style="--c:{color}"><b>{code}</b><span>{fmt_rate(cur_rate)} ₼</span>'
                      f'<em class="{cls}">{arrow}</em></div>')
 
-    st.markdown('<div class="fxcards">' + "".join(cards) + '</div><div class="fxnote">Dünənə görə məzənnə dəyişməsi</div>',
+    st.markdown(f'<div class="fxcards" style="--n:{len(CURRENCIES)}">' + "".join(cards) + '</div><div class="fxnote">Dünənə görə məzənnə dəyişməsi</div>',
                 unsafe_allow_html=True)
 
     if plot:
@@ -612,7 +626,8 @@ if meta.get("version") != EXPECTED_VERSION:
     st.error("⚠️ Apps Script köhnə versiyadır — tarixlər səhv oxuna bilər (məlumat dolmur, eyni gün təkrar yazılır). "
              "Apps Script-ə yeni Code.gs-i yapışdırın, Save edin və **Deploy (Dağıt) → Manage deployments "
              "(Dağıtımları yönet) → ✏️ → Version: New version (Yeni sürüm) → Deploy** edin. "
-             "Yoxlamaq üçün Web app linkini brauzerdə açın: `\"version\": 6` görünməlidir.")
+             "Yoxlamaq üçün Web app linkini brauzerdə açın: `\"version\": 7` görünməlidir. "
+             "Bu yeniləmədən sonra yazmaq düyməsi də açılacaq.")
 
 if existing:
     st.markdown(f'<div class="pill edit">✏️ <b>{d:%d.%m.%Y}</b> cədvəldə var (sətir {ex_row}) — təsdiqləsəniz həmin sətir düzələcək.</div>',
@@ -644,7 +659,7 @@ for i, (code, sym, color, col) in enumerate(CURRENCIES):
         if isinstance(v, (int, float)) and v > 0:
             base, from_sheet = float(v), True
     if base is None and fetched["rates"]:
-        base = fetched["rates"][code]
+        base = fetched["rates"].get(code)
     rates[code] = base or 0.0
 
 st.markdown('<div class="card-title">💱 Günün məzənnəsi</div>', unsafe_allow_html=True)
@@ -658,6 +673,8 @@ if from_sheet:
 elif fetched["rates"]:
     extra = "" if fetched["day"] == d else " (seçilən gün üçün hələ elan olunmayıb, ən yaxın tarix göstərilir)"
     st.caption(f"Mənbə: {fetched['source']} · {fetched['day']:%d.%m.%Y}{extra}")
+    if fetched.get("missing"):
+        st.warning(f"{', '.join(fetched['missing'])} üçün məzənnə avtomatik alınmadı — «Məzənnəni əl ilə düzəlt» bölməsindən yazın.")
 else:
     st.warning("Məzənnə avtomatik alınmadı — yuxarıdakı xanadan əl ilə yazın.")
     with st.expander("🔧 Texniki detallar"):
@@ -666,7 +683,7 @@ else:
         fetch_cached.clear()
         st.rerun()
 strip_ph.markdown(
-    '<div class="rates">' + "".join(
+    f'<div class="rates" style="--n:{len(CURRENCIES)}">' + "".join(
         f'<div class="rate" style="background:{color}"><b>{code}</b><span>{rates[code]:.4f}</span></div>'
         for code, sym, color, col in CURRENCIES) + '</div>', unsafe_allow_html=True)
 
@@ -712,7 +729,7 @@ cash_head.markdown(card_head("💵 Nağd vəsait", values[12] + values[13]), uns
 
 # ── Xarici vəsait (basanda açılır)
 total_azn = 0.0
-with st.expander("🌍 Xarici vəsait — USD · EUR · RUB · AED · TRY", expanded=False):
+with st.expander("🌍 Xarici vəsait — " + " · ".join(c[0] for c in CURRENCIES), expanded=False):
     st.caption("Məbləği yazın — AZN qarşılığı həmin günün məzənnəsi ilə hesablanıb cədvəlin \\AZN sütununa avtomatik yazılacaq.")
     for code, sym, color, col in CURRENCIES:
         c1, c2 = st.columns([3, 2])
@@ -762,7 +779,7 @@ if pend and pend["date"] == d and pend["values"] == values and pend["rates"] == 
         st.dataframe(pd.DataFrame(table, columns=["Sahə", "Dəyər"]), hide_index=True)
     b1, b2 = st.columns(2)
     saved = False
-    if b1.button("✅ Təsdiqlə və Sheet-ə yaz", type="primary"):
+    if b1.button("✅ Təsdiqlə və Sheet-ə yaz", type="primary", disabled=meta.get("version") != EXPECTED_VERSION):
         try:
             save_day(d, pend["values"], pend["rates"])
             saved = True
