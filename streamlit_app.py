@@ -122,7 +122,7 @@ div[data-testid="stExpander"] { border-radius:16px; }
 .fxc em.up { color:#16a34a; opacity:1; }
 .fxc em.down { color:#dc2626; opacity:1; }
 .fxnote { font-size:.66rem; opacity:.6; text-align:center; margin-bottom:6px; }
-.rain { position:fixed; top:0; left:0; right:0; bottom:0; pointer-events:none; z-index:99999; overflow:hidden; }
+.rain { position:fixed; top:0; left:0; right:0; bottom:0; pointer-events:none; z-index:2147483000; overflow:hidden; }
 .rain i { position:absolute; top:-70px; font-style:normal; animation-name:rainfall; animation-timing-function:linear; animation-fill-mode:forwards; }
 .rain .coin { border-radius:50%; display:flex; align-items:center; justify-content:center; font-weight:800; color:#7a5200;
     background:radial-gradient(circle at 30% 28%,#fff6bf,#f7c823 52%,#b8860b); border:2px solid #c99a1a; box-shadow:0 3px 8px rgba(0,0,0,.28); }
@@ -137,6 +137,11 @@ div[data-testid="stExpander"] { border-radius:16px; }
 .gain.down { background:rgba(239,68,68,.13); border-color:rgba(239,68,68,.5); }
 .gain.down b { color:#ef4444; }
 .gain.flat { background:rgba(128,128,128,.12); }
+.gain.big { padding:22px 18px 18px; margin:0; animation:popin .5s cubic-bezier(.2,1.4,.4,1); }
+.gain.big b { font-size:2.9rem; }
+.gain .face { display:inline-block; font-size:3.2rem; line-height:1.1; animation:wiggle 1.1s ease-in-out 2; }
+@keyframes popin { 0% { transform:scale(.6); opacity:0; } 100% { transform:scale(1); opacity:1; } }
+@keyframes wiggle { 0%,100% { transform:rotate(0deg); } 25% { transform:rotate(-14deg); } 75% { transform:rotate(14deg); } }
 .dl.up { color:#22c55e; } .dl.down { color:#ef4444; }
 .card-head { display:flex; justify-content:space-between; align-items:baseline; margin-bottom:2px; }
 .card-head span { font-weight:700; font-size:.98rem; }
@@ -630,6 +635,18 @@ def rain_html(kind):
     return '<div class="rain">' + "".join(items) + "</div>" if items else ""
 
 
+def _gain_body(card_html, caption):
+    st.markdown(card_html, unsafe_allow_html=True)
+    if caption:
+        st.caption(caption)
+    if st.button("Bağla", type="primary", key="close_gain"):
+        st.rerun()
+
+
+# Ekranın ortasında popup (alert) — Streamlit-in dialoq funksiyası varsa
+gain_dialog = st.dialog("💼 Balans nəticəsi")(_gain_body) if hasattr(st, "dialog") else None
+
+
 def show_flash(f):
     if isinstance(f, str):
         st.success(f)
@@ -637,22 +654,27 @@ def show_flash(f):
     st.success(f["msg"])
     total, prev, prev_date = f["total"], f.get("prev_total"), f.get("prev_date")
     if prev is None:
-        st.markdown(f'<div class="gain flat"><small>😊 İlk qeyd · cəmi vəsait</small><b>{money(total)} ₼</b></div>',
-                    unsafe_allow_html=True)
-        return
-    delta = total - prev
-    if delta > 0.004:
-        kind, face, sign, label = "up", "😄", "+", "Balans artdı"
-    elif delta < -0.004:
-        kind, face, sign, label = "down", "😢", "−", "Balans azaldı"
+        card = (f'<div class="gain flat big"><div class="face">😊</div><small>İlk qeyd · cəmi vəsait</small>'
+                f'<b>{money(total)} ₼</b></div>')
+        caption, kind = "", "flat"
     else:
-        kind, face, sign, label = "flat", "😐", "", "Balans dəyişmədi"
+        delta = total - prev
+        if delta > 0.004:
+            kind, face, sign, label = "up", "😄", "+", "Balans artdı"
+        elif delta < -0.004:
+            kind, face, sign, label = "down", "😢", "−", "Balans azaldı"
+        else:
+            kind, face, sign, label = "flat", "😐", "", "Balans dəyişmədi"
+        card = (f'<div class="gain {kind} big"><div class="face">{face}</div><small>{label} · {prev_date:%d.%m.%Y} gününə görə</small>'
+                f'<b>{sign}{money(abs(delta))} ₼</b><span>{money(prev)} ₼ → {money(total)} ₼</span></div>')
+        caption = ""
     rain = rain_html(kind)
     if rain:
         st.markdown(rain, unsafe_allow_html=True)
-    st.markdown(f'<div class="gain {kind}"><small>{face} {label} · {prev_date:%d.%m.%Y} gününə görə</small>'
-                f'<b>{sign}{money(abs(delta))} ₼</b><span>{money(prev)} ₼ → {money(total)} ₼</span></div>',
-                unsafe_allow_html=True)
+    if gain_dialog:
+        gain_dialog(card, caption)
+    else:
+        st.markdown(card, unsafe_allow_html=True)
 
 
 # ═════════════ Səhifə ═════════════
