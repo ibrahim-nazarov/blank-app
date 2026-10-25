@@ -111,6 +111,17 @@ div[role="radiogroup"] > label:has(input:checked) p { color:#fff !important; fon
     background:linear-gradient(135deg,#2563eb,#7c3aed); border:0; color:#fff; }
 div[data-testid="stVerticalBlockBorderWrapper"] { border-radius:18px; }
 div[data-testid="stExpander"] { border-radius:16px; }
+.card-head { display:flex; justify-content:space-between; align-items:baseline; margin-bottom:2px; }
+.card-head span { font-weight:700; font-size:.98rem; }
+.card-head b { font-size:.95rem; opacity:.9; }
+.grp { display:flex; justify-content:space-between; align-items:center; border-left:4px solid var(--c);
+    background:rgba(128,128,128,.10); background:linear-gradient(90deg, color-mix(in srgb, var(--c) 16%, transparent), transparent);
+    padding:5px 10px; border-radius:8px; font-size:.82rem; margin:6px 0 0; }
+.grp b { font-size:.82rem; }
+div[data-testid="stNumberInput"] label { margin-bottom:.1rem; }
+div[data-testid="stNumberInput"] div[data-baseweb="input"] { min-height:2.4rem; }
+div[data-testid="stNumberInput"] input { padding-top:.3rem; padding-bottom:.3rem; }
+div[data-testid="stVerticalBlockBorderWrapper"] div[data-testid="stVerticalBlock"] { gap:.5rem; }
 @media (max-width: 640px) {
   div[data-testid="stHorizontalBlock"] { flex-wrap:nowrap !important; gap:.6rem !important; }
   div[data-testid="stHorizontalBlock"] > div[data-testid="column"],
@@ -512,23 +523,43 @@ strip_ph.markdown(
 
 # ── Hesablar
 values = {}
-by_col = {c: (lbl, g) for c, lbl, g in LOCAL_FIELDS}
+SHORT = {2: "1101", 3: "9580", 4: "3854 · Taksit kartı", 5: "1815", 6: "Balans", 7: "Kart", 8: "Depozit",
+         9: "Kart", 10: "Depozit", 11: "Kart", 12: "Nağd vəsaitim", 13: "Nağd vəsaitim"}
+DISPLAY = {"Gündəlik nağd": "Gündəlik", "Kassada nağd": "Kassada olan"}
 
 
-def grid(cols_list, container):
-    for i in range(0, len(cols_list), 2):
-        cc = container.columns(2)
-        for j, col in enumerate(cols_list[i:i + 2]):
-            values[col] = cc[j].number_input(by_col[col][0], value=default(col), step=1.0, format="%.2f",
+def group_block(name, cols_list, ncols, container):
+    """Bir qrup: rəngli başlıq (cəmi ilə) + onun xanaları."""
+    hdr = container.container()
+    for i in range(0, len(cols_list), ncols):
+        cc = container.columns(ncols) if ncols > 1 else [container]
+        for j, col in enumerate(cols_list[i:i + ncols]):
+            values[col] = cc[j].number_input(SHORT[col], value=default(col), step=1.0, format="%.2f",
                                              key=f"f{col}_{iso}_{sig}")
+    hdr.markdown(f'<div class="grp" style="--c:{GROUP_COLORS[name]}"><span>{DISPLAY.get(name, name)}</span>'
+                 f'<b>{money(sum(values[c] for c in cols_list))} ₼</b></div>', unsafe_allow_html=True)
+
+
+def card_head(title, total):
+    return f'<div class="card-head"><span>{title}</span><b>{money(total)} ₼</b></div>'
 
 
 with st.container(border=True):
-    st.markdown('<div class="card-title">🏦 Bank hesabları (AZN)</div>', unsafe_allow_html=True)
-    grid(list(range(2, 12)), st)
+    bank_head = st.container()
+    group_block("Kapital bank", [2, 3, 4, 5], 2, st)
+    group_block("Yelo bank", [7, 8], 2, st)
+    group_block("Leobank", [9, 10], 2, st)
+    pair = st.columns(2)
+    group_block("m10", [6], 1, pair[0])
+    group_block("Ubank", [11], 1, pair[1])
+bank_head.markdown(card_head("🏦 Bank hesabları", sum(values[c] for c in range(2, 12))), unsafe_allow_html=True)
+
 with st.container(border=True):
-    st.markdown('<div class="card-title">💵 Nağd vəsait (AZN)</div>', unsafe_allow_html=True)
-    grid([12, 13], st)
+    cash_head = st.container()
+    pair2 = st.columns(2)
+    group_block("Gündəlik nağd", [12], 1, pair2[0])
+    group_block("Kassada nağd", [13], 1, pair2[1])
+cash_head.markdown(card_head("💵 Nağd vəsait", values[12] + values[13]), unsafe_allow_html=True)
 
 # ── Xarici vəsait (basanda açılır)
 total_azn = 0.0
